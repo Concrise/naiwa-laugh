@@ -25,6 +25,7 @@
   .status.on i { width: 14px; height: 14px; }
   .stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
   .frog { height: min(62vh, 600px); aspect-ratio: 550 / 890; max-width: 100%; }
+  .ver { color: var(--muted); font-size: 12px; opacity: .6; }
   .sound { border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 4px 0 0; }
   .tip { text-align: center; font-size: 17px; line-height: 1.75; }
   .tip b { background: var(--yellow-soft); padding: 2px 8px; border-radius: 6px; }
@@ -56,7 +57,7 @@
   </div>
   <div class="bar"><div id="bar"></div></div>
   <div class="hint" id="hint">加载中…</div>
-  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button></div>
+  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v3</span></div>
 </div>
 <div class="gate" id="gate"><button id="gateBtn">点我开始摇</button></div>
 
@@ -122,12 +123,38 @@ const sound = (() => {
     el.preservesPitch = false; el.webkitPreservesPitch = false;
   }
   function wake() {
+    if (keepAlive) startKeepAlive();
     if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
     // 兜底模式下保持一直在播，只靠静音开关控制，避免之后的 play() 被拦
     if (el && el.paused) { el.muted = !wasOn; el.play().catch(() => {}); }
   }
+  // iOS 打开静音拨片时会把 Web Audio 静音；只要页面里有一个 <audio> 在播，iOS 就按媒体播放处理，
+  // 所以在点击里循环播一段空白音频（微信内置浏览器不一定支持 navigator.audioSession）
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let keepAlive = null;
+  function silentWavUrl() {
+    const n = 4000, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+    w(36, 'data'); v.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);   // 8 位 PCM 的静音值
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  function startKeepAlive() {
+    if (!isIOS) return;
+    if (!keepAlive) {
+      keepAlive = new Audio(silentWavUrl());
+      keepAlive.loop = true;
+      keepAlive.setAttribute('playsinline', '');
+      keepAlive.setAttribute('x-webkit-airplay', 'deny');
+    }
+    if (keepAlive.paused) keepAlive.play().catch(() => {});
+  }
   function unlock() {               // 必须在点击回调里调用
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}  // iOS 17+：静音拨片下也出声
+    startKeepAlive();
     if (!AC) { useElement(); }
     else if (!ctx) {
       try {
