@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>奶蛙大笑</title>
-<link rel="preload" href="assets/sprites/intro.webp" as="image" type="image/webp">
+<link rel="preload" href="assets/small/000.webp" as="image" type="image/webp">
 <link rel="preload" href="assets/laugh.m4a" as="fetch" crossorigin="anonymous">
 <style>
   :root {
@@ -59,7 +59,7 @@
   </div>
   <div class="bar"><div id="bar"></div></div>
   <div class="hint" id="hint">加载中…</div>
-  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v5</span></div>
+  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v6</span></div>
 </div>
 <div class="gate" id="gate"><button id="gateBtn">点我开始摇</button></div>
 
@@ -80,42 +80,36 @@ let gain = SENS.high;
 let energy = 0;                 // 摇晃能量，>1 开始笑，随时间衰减
 let frame = IDLE_FRAME, acc = 0, last = performance.now();
 
-// 35 帧拼成 2 张精灵图（每格 330×534，原画质版本在 v4/）：
-// intro.webp = 待机 + 开笑过渡（第 0–10 帧，4 列），loop.webp = 大笑循环（第 11–34 帧，6 列）。
-// 先下 intro，奶蛙马上出现；loop 随后下载。解码完才拿来画，第一次笑的时候不会卡一下。
+// 35 张缩小后的单帧（330×534，约 11K 一张；原画质版本在 v4/）。
+// 全部同时下载、到一帧用一帧：跨境线路丢包多，一个大文件卡住就全卡，多个小文件能并行传。
+// 待机帧排第一个（也在 <head> 里预加载）；每帧解码完才拿来画，第一次笑的时候不会卡一下。
 const ctx = frog.getContext('2d');
 const FW = 330, FH = 534;
-const SHEETS = [
-  { url: 'assets/sprites/intro.webp', first: 0, cols: 4, img: null },
-  { url: 'assets/sprites/loop.webp', first: LOOP_START, cols: 6, img: null },
-];
-let sheetsReady = 0;
-function loadSheet(sheet) {
-  return new Promise(done => {
-    const im = new Image();
-    im.onload = async () => {
-      try { if (im.decode) await im.decode(); } catch (e) { /* 解码失败也照样能画，只是第一次可能慢一点 */ }
-      sheet.img = im;
-      sheetsReady++;
-      hint.textContent = sheetsReady === SHEETS.length ? '' : `加载中 ${sheetsReady}/${SHEETS.length}`;
-      shown = -1;
-      show(frame);
-      done();
-    };
-    im.onerror = () => { hint.textContent = '图片没加载出来，刷新一下试试'; done(); };
-    im.src = sheet.url;
-  });
+const imgs = new Array(FRAMES).fill(null);
+let loaded = 0;
+function loadFrame(i) {
+  const im = new Image();
+  im.onload = async () => {
+    try { if (im.decode) await im.decode(); } catch (e) { /* 解码失败也照样能画，只是第一次可能慢一点 */ }
+    imgs[i] = im;
+    loaded++;
+    hint.textContent = loaded === FRAMES ? '' : `加载中 ${loaded}/${FRAMES}`;
+    if (i === frame) { shown = -1; show(frame); }
+  };
+  im.onerror = () => { hint.textContent = '图片没加载出来，刷新一下试试'; };
+  im.src = `assets/small/${String(i).padStart(3, '0')}.webp`;
 }
-loadSheet(SHEETS[0]).then(() => loadSheet(SHEETS[1]));
+for (let i = 0; i < FRAMES; i++) loadFrame(i);
 
 let shown = -1;
 function show(i) {
-  const sheet = i >= SHEETS[1].first ? SHEETS[1] : SHEETS[0];
-  if (i === shown || !sheet.img) return;   // 循环图还没到时先停在上一帧
-  const j = i - sheet.first;
+  // 这一帧还没到就画最近一张已到的帧，动作不会卡死在一帧上
+  let k = i;
+  while (k > 0 && !imgs[k]) k--;
+  if (k === shown || !imgs[k]) return;
   ctx.clearRect(0, 0, FW, FH);
-  ctx.drawImage(sheet.img, (j % sheet.cols) * FW, Math.floor(j / sheet.cols) * FH, FW, FH, 0, 0, FW, FH);
-  shown = i;
+  ctx.drawImage(imgs[k], 0, 0, FW, FH);
+  shown = k;
 }
 
 // 笑声：和画面同一段，播放速度跟着摇晃速度变。
