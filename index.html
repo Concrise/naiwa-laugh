@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>奶蛙大笑</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #2a2418;
+    --muted: #8a8170;
+    --yellow: #f2c443;
+    --yellow-soft: #fbf1cf;
+    --line: #e9e2d0;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; overflow: hidden;
+    user-select: none; -webkit-user-select: none; touch-action: none; }
+  .app { height: 100%; max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; padding: 20px 16px 28px; }
+  header { display: flex; justify-content: space-between; align-items: center; }
+  h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: 1px; }
+  .status { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 16px; }
+  .status i { width: 10px; height: 10px; border-radius: 50%; background: var(--yellow); transition: transform .15s; }
+  .status.on i { width: 14px; height: 14px; }
+  .stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  .frog { height: min(62vh, 600px); aspect-ratio: 550 / 890; max-width: 100%; }
+  .sound { border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 4px 0 0; }
+  .tip { text-align: center; font-size: 17px; line-height: 1.75; }
+  .tip b { background: var(--yellow-soft); padding: 2px 8px; border-radius: 6px; }
+  .sens { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 16px; }
+  .sens span { color: var(--muted); font-size: 15px; }
+  .sens button { width: 62px; height: 44px; border-radius: 22px; border: 1.5px solid var(--line);
+    background: var(--bg); color: var(--ink); font-size: 17px; cursor: pointer; }
+  .sens button.on { background: var(--yellow); border-color: var(--yellow); font-weight: 700; }
+  .bar { height: 5px; border-radius: 3px; background: var(--yellow-soft); margin: 18px auto 0; width: 70%; overflow: hidden; }
+  .bar div { height: 100%; width: 0; background: var(--yellow); border-radius: 3px; }
+  .hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 10px; min-height: 1em; }
+  .gate { position: fixed; inset: 0; background: rgba(255,255,255,.92); display: none;
+    align-items: center; justify-content: center; z-index: 10; }
+  .gate button { padding: 14px 28px; border-radius: 26px; border: 0; background: var(--yellow);
+    font-size: 18px; font-weight: 700; color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>奶蛙大笑</h1>
+    <div class="status" id="status"><i></i><span id="statusText">摇一摇</span></div>
+  </header>
+  <div class="stage"><canvas class="frog" id="frog" width="550" height="890"></canvas></div>
+  <div class="tip"><b>摇一摇手机</b>，奶蛙就捧腹大笑<br>摇得越快笑得越快，停下就不笑</div>
+  <div class="sens" id="sens">
+    <span>灵敏度</span>
+    <button data-s="low">低</button><button data-s="mid" class="on">中</button><button data-s="high">高</button>
+  </div>
+  <div class="bar"><div id="bar"></div></div>
+  <div class="hint" id="hint">加载中…</div>
+  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button></div>
+</div>
+<div class="gate" id="gate"><button id="gateBtn">点我开始摇</button></div>
+
+<script>
+// 帧序列：B 站 BV1p2Tp6REay「奶龙大笑【原版】」逐帧扣背景，原片 30fps
+// 0 = 待机（原片第 0 帧），1–10 = 开笑过渡（第 60–69 帧），11–34 = 捧腹大笑循环（第 70–93 帧）
+const FRAMES = 35, BASE_FPS = 30;
+const IDLE_FRAME = 0, INTRO_START = 1, LOOP_START = 11;
+const SENS = { low: 0.55, mid: 1, high: 1.7 };
+
+const frog = document.getElementById('frog');
+const statusEl = document.getElementById('status');
+const statusText = document.getElementById('statusText');
+const bar = document.getElementById('bar');
+const hint = document.getElementById('hint');
+
+let gain = SENS.mid;
+let energy = 0;                 // 摇晃能量，>1 开始笑，随时间衰减
+let frame = IDLE_FRAME, acc = 0, last = performance.now();
+
+const ctx = frog.getContext('2d');
+const imgs = [];
+let loaded = 0;
+for (let i = 0; i < FRAMES; i++) {
+  const im = new Image();
+  im.onload = () => { if (++loaded === FRAMES) hint.textContent = ''; else hint.textContent = `加载中 ${loaded}/${FRAMES}`; };
+  im.src = `assets/frames/${String(i).padStart(3, '0')}.webp`;
+  imgs.push(im);
+}
+let shown = -1;
+function show(i) {
+  const im = imgs[i];
+  if (i === shown || !im.complete || !im.naturalWidth) return;
+  ctx.clearRect(0, 0, frog.width, frog.height);
+  ctx.drawImage(im, 0, 0);
+  shown = i;
+}
+
+// 笑声：和画面同一段，播放速度跟着摇晃速度变
+const laugh = new Audio('assets/laugh.m4a');
+laugh.loop = true;
+laugh.preservesPitch = false;
+let soundOn = true, unlocked = false;
+function unlockAudio() {
+  if (unlocked) return;
+  unlocked = true;
+  laugh.muted = true;
+  laugh.play().then(() => { laugh.pause(); laugh.muted = false; }).catch(() => { unlocked = false; });
+}
+window.addEventListener('pointerdown', unlockAudio);
+document.getElementById('sound').onclick = e => {
+  soundOn = !soundOn;
+  e.currentTarget.textContent = soundOn ? '🔊 声音：开' : '🔇 声音：关';
+  if (!soundOn) laugh.pause();
+};
+
+function addShake(amount) { energy = Math.min(energy + amount * gain, 6); }
+
+// 手机：用加速度的变化量衡量摇晃
+let prev = null;
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity || e.acceleration;
+  if (!a || a.x == null) return;
+  if (prev) {
+    const d = Math.abs(a.x - prev.x) + Math.abs(a.y - prev.y) + Math.abs(a.z - prev.z);
+    if (d > 2) addShake((d - 2) * 0.012);
+  }
+  prev = { x: a.x, y: a.y, z: a.z };
+}
+
+// 电脑调试：按住鼠标/手指来回晃，方向反转越频繁越快
+let lastMove = null, lastDir = 0;
+window.addEventListener('pointermove', e => {
+  if (!lastMove) { lastMove = { x: e.clientX, y: e.clientY }; return; }
+  const dx = e.clientX - lastMove.x, dy = e.clientY - lastMove.y;
+  lastMove = { x: e.clientX, y: e.clientY };
+  const dist = Math.hypot(dx, dy);
+  const dir = Math.sign(Math.abs(dx) > Math.abs(dy) ? dx : dy);
+  if (dir && dir !== lastDir) { addShake(0.08 + dist * 0.004); lastDir = dir; }
+  else addShake(dist * 0.0012);
+});
+
+function startMotion() {
+  window.addEventListener('devicemotion', onMotion);
+  setTimeout(() => { if (!prev) hint.textContent = isTouch ? '没读到动作传感器' : '电脑上：鼠标快速左右来回晃'; }, 1500);
+}
+
+// iOS 13+ 需要用户点击后申请权限，且必须是 HTTPS
+const isTouch = navigator.maxTouchPoints > 0;
+if (isTouch && typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+  const gate = document.getElementById('gate');
+  gate.style.display = 'flex';
+  document.getElementById('gateBtn').onclick = async () => {
+    unlockAudio();
+    try {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r === 'granted') startMotion(); else hint.textContent = '没有动作权限，奶蛙笑不起来';
+    } catch (err) { hint.textContent = '需要 HTTPS 才能读取动作传感器'; }
+    gate.style.display = 'none';
+  };
+} else {
+  startMotion();
+}
+
+document.getElementById('sens').addEventListener('click', e => {
+  const s = e.target.dataset && e.target.dataset.s;
+  if (!s) return;
+  gain = SENS[s];
+  for (const b of e.currentTarget.querySelectorAll('button')) b.classList.toggle('on', b === e.target);
+});
+
+function tick(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  energy *= Math.exp(-dt * 2.2);
+
+  const laughing = energy > 1;
+  if (laughing) {
+    const speed = Math.min(0.7 + (energy - 1) * 0.45, 3);
+    acc += dt * BASE_FPS * speed;
+    if (frame === IDLE_FRAME) frame = INTRO_START;
+    while (acc >= 1) {
+      frame = frame + 1 >= FRAMES ? LOOP_START : frame + 1; acc -= 1;
+      if (frame % 20 === 0 && 'vibrate' in navigator) navigator.vibrate(15);
+    }
+    statusText.textContent = `大笑中 ×${speed.toFixed(1)}`;
+    if (soundOn && unlocked) {
+      laugh.playbackRate = speed;
+      if (laugh.paused) laugh.play().catch(() => {});
+    }
+  } else {
+    frame = IDLE_FRAME; acc = 0;
+    statusText.textContent = '摇一摇';
+    if (!laugh.paused) laugh.pause();
+  }
+  statusEl.classList.toggle('on', laughing);
+  show(frame);
+  bar.style.width = `${Math.min(energy / 4, 1) * 100}%`;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
