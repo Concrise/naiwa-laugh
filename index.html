@@ -103,8 +103,8 @@ let soundOn = true, unlocked = false;
 function unlockAudio() {
   if (unlocked) return;
   unlocked = true;
-  laugh.muted = true;
-  laugh.play().then(() => { laugh.pause(); laugh.muted = false; }).catch(() => { unlocked = false; });
+  // 必须在点击里真正（不静音）播放一次，iOS 才允许之后在动画循环里出声
+  laugh.play().then(() => { laugh.pause(); laugh.currentTime = 0; }).catch(() => { unlocked = false; });
 }
 window.addEventListener('pointerdown', unlockAudio);
 document.getElementById('sound').onclick = e => {
@@ -144,22 +144,21 @@ function startMotion() {
   setTimeout(() => { if (!prev) hint.textContent = isTouch ? '没读到动作传感器' : '电脑上：鼠标快速左右来回晃'; }, 1500);
 }
 
-// iOS 13+ 需要用户点击后申请权限，且必须是 HTTPS
+// 浏览器要求用户先点一下才能出声，iOS 13+ 还要在点击里申请动作权限，所以所有设备都先点「开始」
 const isTouch = navigator.maxTouchPoints > 0;
-if (isTouch && typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-  const gate = document.getElementById('gate');
-  gate.style.display = 'flex';
-  document.getElementById('gateBtn').onclick = async () => {
-    unlockAudio();
-    try {
-      const r = await DeviceMotionEvent.requestPermission();
-      if (r === 'granted') startMotion(); else hint.textContent = '没有动作权限，奶蛙笑不起来';
-    } catch (err) { hint.textContent = '需要 HTTPS 才能读取动作传感器'; }
-    gate.style.display = 'none';
-  };
-} else {
-  startMotion();
-}
+const needsMotionPermission = isTouch && typeof DeviceMotionEvent !== 'undefined'
+  && typeof DeviceMotionEvent.requestPermission === 'function';
+const gate = document.getElementById('gate');
+gate.style.display = 'flex';
+document.getElementById('gateBtn').onclick = async () => {
+  unlockAudio();
+  gate.style.display = 'none';
+  if (!needsMotionPermission) { startMotion(); return; }
+  try {
+    const r = await DeviceMotionEvent.requestPermission();
+    if (r === 'granted') startMotion(); else hint.textContent = '没有动作权限，奶蛙笑不起来';
+  } catch (err) { hint.textContent = '需要 HTTPS 才能读取动作传感器'; }
+};
 
 document.getElementById('sens').addEventListener('click', e => {
   const s = e.target.dataset && e.target.dataset.s;
