@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>奶蛙大笑</title>
+<link rel="preload" href="assets/sprites/intro.webp" as="image" type="image/webp">
+<link rel="preload" href="assets/laugh.m4a" as="fetch" crossorigin="anonymous">
 <style>
   :root {
     --bg: #ffffff;
@@ -49,7 +51,7 @@
     <h1>奶蛙大笑</h1>
     <div class="status" id="status"><i></i><span id="statusText">摇一摇</span></div>
   </header>
-  <div class="stage"><canvas class="frog" id="frog" width="550" height="890"></canvas></div>
+  <div class="stage"><canvas class="frog" id="frog" width="330" height="534"></canvas></div>
   <div class="tip"><b>摇一摇手机</b>，奶蛙就捧腹大笑<br>摇得越快笑得越快，停下就不笑</div>
   <div class="sens" id="sens">
     <span>灵敏度</span>
@@ -57,7 +59,7 @@
   </div>
   <div class="bar"><div id="bar"></div></div>
   <div class="hint" id="hint">加载中…</div>
-  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v4</span></div>
+  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v5</span></div>
 </div>
 <div class="gate" id="gate"><button id="gateBtn">点我开始摇</button></div>
 
@@ -78,21 +80,41 @@ let gain = SENS.high;
 let energy = 0;                 // 摇晃能量，>1 开始笑，随时间衰减
 let frame = IDLE_FRAME, acc = 0, last = performance.now();
 
+// 35 帧拼成 2 张精灵图（每格 330×534，原画质版本在 v4/）：
+// intro.webp = 待机 + 开笑过渡（第 0–10 帧，4 列），loop.webp = 大笑循环（第 11–34 帧，6 列）。
+// 先下 intro，奶蛙马上出现；loop 随后下载。解码完才拿来画，第一次笑的时候不会卡一下。
 const ctx = frog.getContext('2d');
-const imgs = [];
-let loaded = 0;
-for (let i = 0; i < FRAMES; i++) {
-  const im = new Image();
-  im.onload = () => { if (++loaded === FRAMES) hint.textContent = ''; else hint.textContent = `加载中 ${loaded}/${FRAMES}`; };
-  im.src = `assets/frames/${String(i).padStart(3, '0')}.webp`;
-  imgs.push(im);
+const FW = 330, FH = 534;
+const SHEETS = [
+  { url: 'assets/sprites/intro.webp', first: 0, cols: 4, img: null },
+  { url: 'assets/sprites/loop.webp', first: LOOP_START, cols: 6, img: null },
+];
+let sheetsReady = 0;
+function loadSheet(sheet) {
+  return new Promise(done => {
+    const im = new Image();
+    im.onload = async () => {
+      try { if (im.decode) await im.decode(); } catch (e) { /* 解码失败也照样能画，只是第一次可能慢一点 */ }
+      sheet.img = im;
+      sheetsReady++;
+      hint.textContent = sheetsReady === SHEETS.length ? '' : `加载中 ${sheetsReady}/${SHEETS.length}`;
+      shown = -1;
+      show(frame);
+      done();
+    };
+    im.onerror = () => { hint.textContent = '图片没加载出来，刷新一下试试'; done(); };
+    im.src = sheet.url;
+  });
 }
+loadSheet(SHEETS[0]).then(() => loadSheet(SHEETS[1]));
+
 let shown = -1;
 function show(i) {
-  const im = imgs[i];
-  if (i === shown || !im.complete || !im.naturalWidth) return;
-  ctx.clearRect(0, 0, frog.width, frog.height);
-  ctx.drawImage(im, 0, 0);
+  const sheet = i >= SHEETS[1].first ? SHEETS[1] : SHEETS[0];
+  if (i === shown || !sheet.img) return;   // 循环图还没到时先停在上一帧
+  const j = i - sheet.first;
+  ctx.clearRect(0, 0, FW, FH);
+  ctx.drawImage(sheet.img, (j % sheet.cols) * FW, Math.floor(j / sheet.cols) * FH, FW, FH, 0, 0, FW, FH);
   shown = i;
 }
 

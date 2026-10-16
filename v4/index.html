@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>奶蛙大笑</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #2a2418;
+    --muted: #8a8170;
+    --yellow: #f2c443;
+    --yellow-soft: #fbf1cf;
+    --line: #e9e2d0;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; overflow: hidden;
+    user-select: none; -webkit-user-select: none; touch-action: none; }
+  .app { height: 100%; max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; padding: 20px 16px 28px; }
+  header { display: flex; justify-content: space-between; align-items: center; }
+  h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: 1px; }
+  .status { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 16px; }
+  .status i { width: 10px; height: 10px; border-radius: 50%; background: var(--yellow); transition: transform .15s; }
+  .status.on i { width: 14px; height: 14px; }
+  .stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  .frog { height: min(62vh, 600px); aspect-ratio: 550 / 890; max-width: 100%; }
+  .ver { color: var(--muted); font-size: 12px; opacity: .6; }
+  .sound { border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; padding: 4px 0 0; }
+  .tip { text-align: center; font-size: 17px; line-height: 1.75; }
+  .tip b { background: var(--yellow-soft); padding: 2px 8px; border-radius: 6px; }
+  .sens { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 16px; }
+  .sens span { color: var(--muted); font-size: 15px; }
+  .sens button { width: 62px; height: 44px; border-radius: 22px; border: 1.5px solid var(--line);
+    background: var(--bg); color: var(--ink); font-size: 17px; cursor: pointer; }
+  .sens button.on { background: var(--yellow); border-color: var(--yellow); font-weight: 700; }
+  .bar { height: 5px; border-radius: 3px; background: var(--yellow-soft); margin: 18px auto 0; width: 70%; overflow: hidden; }
+  .bar div { height: 100%; width: 0; background: var(--yellow); border-radius: 3px; }
+  .hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 10px; min-height: 1em; }
+  .gate { position: fixed; inset: 0; background: rgba(255,255,255,.92); display: none;
+    align-items: center; justify-content: center; z-index: 10; }
+  .gate button { padding: 14px 28px; border-radius: 26px; border: 0; background: var(--yellow);
+    font-size: 18px; font-weight: 700; color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>奶蛙大笑</h1>
+    <div class="status" id="status"><i></i><span id="statusText">摇一摇</span></div>
+  </header>
+  <div class="stage"><canvas class="frog" id="frog" width="550" height="890"></canvas></div>
+  <div class="tip"><b>摇一摇手机</b>，奶蛙就捧腹大笑<br>摇得越快笑得越快，停下就不笑</div>
+  <div class="sens" id="sens">
+    <span>灵敏度</span>
+    <button data-s="low">低</button><button data-s="mid">中</button><button data-s="high" class="on">高</button>
+  </div>
+  <div class="bar"><div id="bar"></div></div>
+  <div class="hint" id="hint">加载中…</div>
+  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v4</span></div>
+</div>
+<div class="gate" id="gate"><button id="gateBtn">点我开始摇</button></div>
+
+<script>
+// 帧序列：B 站 BV1p2Tp6REay「奶龙大笑【原版】」逐帧扣背景，原片 30fps
+// 0 = 待机（原片第 0 帧），1–10 = 开笑过渡（第 60–69 帧），11–34 = 捧腹大笑循环（第 70–93 帧）
+const FRAMES = 35, BASE_FPS = 30;
+const IDLE_FRAME = 0, INTRO_START = 1, LOOP_START = 11;
+const SENS = { low: 0.55, mid: 1, high: 1.7 };
+
+const frog = document.getElementById('frog');
+const statusEl = document.getElementById('status');
+const statusText = document.getElementById('statusText');
+const bar = document.getElementById('bar');
+const hint = document.getElementById('hint');
+
+let gain = SENS.high;
+let energy = 0;                 // 摇晃能量，>1 开始笑，随时间衰减
+let frame = IDLE_FRAME, acc = 0, last = performance.now();
+
+const ctx = frog.getContext('2d');
+const imgs = [];
+let loaded = 0;
+for (let i = 0; i < FRAMES; i++) {
+  const im = new Image();
+  im.onload = () => { if (++loaded === FRAMES) hint.textContent = ''; else hint.textContent = `加载中 ${loaded}/${FRAMES}`; };
+  im.src = `../assets/frames/${String(i).padStart(3, '0')}.webp`;
+  imgs.push(im);
+}
+let shown = -1;
+function show(i) {
+  const im = imgs[i];
+  if (i === shown || !im.complete || !im.naturalWidth) return;
+  ctx.clearRect(0, 0, frog.width, frog.height);
+  ctx.drawImage(im, 0, 0);
+  shown = i;
+}
+
+// 笑声：和画面同一段，播放速度跟着摇晃速度变。
+// 用 Web Audio：只要在一次点击里把通道打开，之后开始、停止、变速都不用再点。
+// 微信/QQ 等内置浏览器和不少安卓 WebView 要求每次 <audio>.play() 都在点击里，所以 <audio> 只作兜底。
+const LAUGH_SRC = ['../assets/laugh.m4a', '../assets/laugh.mp3'];
+// 打开页面就开始下载笑声，不等点击（国内访问 GitHub Pages 慢，等点了再下就会好一阵没声音）
+const laughBytes = fetch(LAUGH_SRC[0]).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+laughBytes.catch(() => {});
+const sound = (() => {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  let ctx = null, buffer = null, voice = null, el = null;
+  let enabled = true, wasOn = false;
+  const errs = [];
+  const note = (where, e) => { errs.push(where + ': ' + (e && (e.name || e.message) || e)); if (errs.length > 4) errs.shift(); };
+
+  function decode(data) {
+    // 回调写法兼容老版 Safari（它的 decodeAudioData 不返回 Promise）
+    return new Promise((ok, bad) => { const p = ctx.decodeAudioData(data, ok, bad); if (p && p.catch) p.catch(bad); });
+  }
+  async function load() {
+    for (const url of LAUGH_SRC) {
+      try {
+        const data = url === LAUGH_SRC[0] ? await laughBytes : await (await fetch(url)).arrayBuffer();
+        buffer = await decode(data);
+        return;
+      } catch (e) { note('decode ' + url, e); }
+    }
+    useElement();   // 这时已经不在点击里了，要等下一次点击（wake）才能开始播放
+  }
+  function useElement() {
+    if (el) return;
+    const probe = document.createElement('audio');
+    el = new Audio(probe.canPlayType('audio/mp4; codecs="mp4a.40.2"') ? LAUGH_SRC[0] : LAUGH_SRC[1]);
+    el.loop = true;
+    el.preservesPitch = false; el.webkitPreservesPitch = false;
+    el.preload = 'auto';
+    el.addEventListener('error', () => note('audio', el.error && ('code ' + el.error.code)));
+  }
+  function wake() {
+    if (keepAlive) startKeepAlive();
+    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+    // 兜底模式下保持一直在播，只靠静音开关控制，避免之后的 play() 被拦
+    if (el && el.paused) { el.muted = !wasOn; el.play().catch(e => note('play', e)); }
+  }
+  // iOS 打开静音拨片时会把 Web Audio 静音；只要页面里有一个 <audio> 在播，iOS 就按媒体播放处理，
+  // 所以在点击里循环播一段空白音频（微信内置浏览器不一定支持 navigator.audioSession）
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let keepAlive = null;
+  function silentWavUrl() {
+    const n = 4000, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+    w(36, 'data'); v.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);   // 8 位 PCM 的静音值
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  function startKeepAlive() {
+    if (!isIOS) return;
+    if (!keepAlive) {
+      keepAlive = new Audio(silentWavUrl());
+      keepAlive.loop = true;
+      keepAlive.setAttribute('playsinline', '');
+      keepAlive.setAttribute('x-webkit-airplay', 'deny');
+    }
+    if (keepAlive.paused) keepAlive.play().catch(() => {});
+  }
+  function unlock() {               // 必须在点击回调里调用
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}  // iOS 17+：静音拨片下也出声
+    startKeepAlive();
+    if (!AC) { useElement(); }
+    else if (!ctx) {
+      try {
+        ctx = new AC();
+        load();
+      } catch (e) { note('ctx', e); ctx = null; useElement(); }
+    }
+    if (ctx) {
+      // 老版 iOS 要在点击里真正播一段（哪怕是空白）才算解锁
+      const s = ctx.createBufferSource();
+      s.buffer = ctx.createBuffer(1, 1, 22050);
+      s.connect(ctx.destination);
+      s.start(0);
+    }
+    wake();
+  }
+  function startVoice(speed) {
+    const t = ctx.currentTime;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.setTargetAtTime(1, t, 0.02);
+    g.connect(ctx.destination);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer; src.loop = true;
+    src.playbackRate.setValueAtTime(speed, t);
+    src.connect(g);
+    src.start(t);
+    voice = { src, g };
+  }
+  function stopVoice() {
+    const t = ctx.currentTime;
+    voice.g.gain.setTargetAtTime(0, t, 0.04);
+    voice.src.stop(t + 0.3);
+    voice = null;
+  }
+  function update(laughing, speed) {
+    const on = laughing && enabled;
+    if (buffer && ctx) {
+      if (on && !voice) startVoice(speed);
+      else if (on) voice.src.playbackRate.setTargetAtTime(speed, ctx.currentTime, 0.05);
+      else if (voice) stopVoice();
+    } else if (el && !el.paused) {
+      if (on && !wasOn) el.currentTime = 0;
+      el.muted = !on;
+      if (on) el.playbackRate = speed;
+    }
+    wasOn = on;
+  }
+  function setEnabled(v) { enabled = v; }
+  function stuck() { return el ? el.paused : (!!ctx && ctx.state !== 'running'); }
+  function info() {
+    const parts = [el ? 'mode=audio' : ctx ? 'mode=webaudio' : 'mode=none'];
+    if (ctx) parts.push('ctx=' + ctx.state, 'buffer=' + (buffer ? buffer.duration.toFixed(1) + 's' : 'no'));
+    if (el) parts.push('paused=' + el.paused, 'muted=' + el.muted, 't=' + el.currentTime.toFixed(1), 'ready=' + el.readyState, 'rate=' + el.playbackRate.toFixed(1));
+    parts.push('on=' + wasOn);
+    if (errs.length) parts.push('err=' + errs.join(' | '));
+    return parts.join('  ');
+  }
+  return { unlock, wake, update, setEnabled, stuck, info };
+})();
+
+// 切到后台再回来、来电打断之后，任意一次点击都能把声音叫醒
+window.addEventListener('pointerdown', () => sound.wake());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) sound.wake(); });
+document.addEventListener('WeixinJSBridgeReady', () => sound.wake());  // 微信内置浏览器
+let soundOn = true;
+document.getElementById('sound').onclick = e => {
+  soundOn = !soundOn;
+  sound.setEnabled(soundOn);
+  e.currentTarget.textContent = soundOn ? '🔊 声音：开' : '🔇 声音：关';
+};
+
+function addShake(amount) { energy = Math.min(energy + amount * gain, 6); }
+
+// 手机：用加速度的变化量衡量摇晃
+let prev = null;
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity || e.acceleration;
+  if (!a || a.x == null) return;
+  if (prev) {
+    const d = Math.abs(a.x - prev.x) + Math.abs(a.y - prev.y) + Math.abs(a.z - prev.z);
+    if (d > 2) addShake((d - 2) * 0.012);
+  }
+  prev = { x: a.x, y: a.y, z: a.z };
+}
+
+// 电脑调试：按住鼠标/手指来回晃，方向反转越频繁越快
+let lastMove = null, lastDir = 0;
+window.addEventListener('pointermove', e => {
+  if (!lastMove) { lastMove = { x: e.clientX, y: e.clientY }; return; }
+  const dx = e.clientX - lastMove.x, dy = e.clientY - lastMove.y;
+  lastMove = { x: e.clientX, y: e.clientY };
+  const dist = Math.hypot(dx, dy);
+  const dir = Math.sign(Math.abs(dx) > Math.abs(dy) ? dx : dy);
+  if (dir && dir !== lastDir) { addShake(0.08 + dist * 0.004); lastDir = dir; }
+  else addShake(dist * 0.0012);
+});
+
+function startMotion() {
+  window.addEventListener('devicemotion', onMotion);
+  setTimeout(() => { if (!prev) hint.textContent = isTouch ? '没读到动作传感器' : '电脑上：鼠标快速左右来回晃'; }, 1500);
+}
+
+// 浏览器要求用户先点一下才能出声，iOS 13+ 还要在点击里申请动作权限，所以所有设备都先点「开始」
+const isTouch = navigator.maxTouchPoints > 0;
+const needsMotionPermission = isTouch && typeof DeviceMotionEvent !== 'undefined'
+  && typeof DeviceMotionEvent.requestPermission === 'function';
+const gate = document.getElementById('gate');
+gate.style.display = 'flex';
+document.getElementById('gateBtn').onclick = async () => {
+  sound.unlock();
+  gate.style.display = 'none';
+  if (!needsMotionPermission) { startMotion(); return; }
+  try {
+    const r = await DeviceMotionEvent.requestPermission();
+    if (r === 'granted') startMotion(); else hint.textContent = '没有动作权限，奶蛙笑不起来';
+  } catch (err) { hint.textContent = '需要 HTTPS 才能读取动作传感器'; }
+};
+
+document.getElementById('sens').addEventListener('click', e => {
+  const s = e.target.dataset && e.target.dataset.s;
+  if (!s) return;
+  gain = SENS[s];
+  for (const b of e.currentTarget.querySelectorAll('button')) b.classList.toggle('on', b === e.target);
+});
+
+function tick(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  energy *= Math.exp(-dt * 2.2);
+
+  const laughing = energy > 1;
+  if (laughing) {
+    const speed = Math.min(0.7 + (energy - 1) * 0.45, 3);
+    acc += dt * BASE_FPS * speed;
+    if (frame === IDLE_FRAME) frame = INTRO_START;
+    while (acc >= 1) {
+      frame = frame + 1 >= FRAMES ? LOOP_START : frame + 1; acc -= 1;
+      if (frame % 20 === 0 && 'vibrate' in navigator) navigator.vibrate(15);
+    }
+    statusText.textContent = `大笑中 ×${speed.toFixed(1)}`;
+    sound.update(true, speed);
+    if (soundOn && sound.stuck()) hint.textContent = '没声音？点一下屏幕';
+    else if (hint.textContent === '没声音？点一下屏幕') hint.textContent = '';
+  } else {
+    frame = IDLE_FRAME; acc = 0;
+    statusText.textContent = '摇一摇';
+    sound.update(false, 1);
+  }
+  statusEl.classList.toggle('on', laughing);
+  show(frame);
+  bar.style.width = `${Math.min(energy / 4, 1) * 100}%`;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// 链接后加 ?debug 会在页面底部显示声音状态，排查某个浏览器没声音时截图用
+if (/[?&]debug\b/.test(location.search)) {
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;padding:6px 10px calc(6px + env(safe-area-inset-bottom,0px));' +
+    'font:11px/1.4 ui-monospace,monospace;background:var(--ink);color:var(--bg);opacity:.85;word-break:break-all;z-index:20';
+  document.body.appendChild(box);
+  setInterval(() => { box.textContent = sound.info() + '  ' + navigator.userAgent; }, 500);
+}
+</script>
+</body>
+</html>
