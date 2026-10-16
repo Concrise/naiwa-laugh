@@ -53,11 +53,11 @@
   <div class="tip"><b>摇一摇手机</b>，奶蛙就捧腹大笑<br>摇得越快笑得越快，停下就不笑</div>
   <div class="sens" id="sens">
     <span>灵敏度</span>
-    <button data-s="low">低</button><button data-s="mid" class="on">中</button><button data-s="high">高</button>
+    <button data-s="low">低</button><button data-s="mid">中</button><button data-s="high" class="on">高</button>
   </div>
   <div class="bar"><div id="bar"></div></div>
   <div class="hint" id="hint">加载中…</div>
-  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v3</span></div>
+  <div style="text-align:center"><button class="sound" id="sound">🔊 声音：开</button> <span class="ver">v4</span></div>
 </div>
 <div class="gate" id="gate"><button id="gateBtn">点我开始摇</button></div>
 
@@ -74,7 +74,7 @@ const statusText = document.getElementById('statusText');
 const bar = document.getElementById('bar');
 const hint = document.getElementById('hint');
 
-let gain = SENS.mid;
+let gain = SENS.high;
 let energy = 0;                 // 摇晃能量，>1 开始笑，随时间衰减
 let frame = IDLE_FRAME, acc = 0, last = performance.now();
 
@@ -100,10 +100,15 @@ function show(i) {
 // 用 Web Audio：只要在一次点击里把通道打开，之后开始、停止、变速都不用再点。
 // 微信/QQ 等内置浏览器和不少安卓 WebView 要求每次 <audio>.play() 都在点击里，所以 <audio> 只作兜底。
 const LAUGH_SRC = ['assets/laugh.m4a', 'assets/laugh.mp3'];
+// 打开页面就开始下载笑声，不等点击（国内访问 GitHub Pages 慢，等点了再下就会好一阵没声音）
+const laughBytes = fetch(LAUGH_SRC[0]).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+laughBytes.catch(() => {});
 const sound = (() => {
   const AC = window.AudioContext || window.webkitAudioContext;
   let ctx = null, buffer = null, voice = null, el = null;
   let enabled = true, wasOn = false;
+  const errs = [];
+  const note = (where, e) => { errs.push(where + ': ' + (e && (e.name || e.message) || e)); if (errs.length > 4) errs.shift(); };
 
   function decode(data) {
     // 回调写法兼容老版 Safari（它的 decodeAudioData 不返回 Promise）
@@ -111,9 +116,13 @@ const sound = (() => {
   }
   async function load() {
     for (const url of LAUGH_SRC) {
-      try { buffer = await decode(await (await fetch(url)).arrayBuffer()); return; } catch (e) { /* 换下一个格式 */ }
+      try {
+        const data = url === LAUGH_SRC[0] ? await laughBytes : await (await fetch(url)).arrayBuffer();
+        buffer = await decode(data);
+        return;
+      } catch (e) { note('decode ' + url, e); }
     }
-    useElement();
+    useElement();   // 这时已经不在点击里了，要等下一次点击（wake）才能开始播放
   }
   function useElement() {
     if (el) return;
@@ -121,12 +130,14 @@ const sound = (() => {
     el = new Audio(probe.canPlayType('audio/mp4; codecs="mp4a.40.2"') ? LAUGH_SRC[0] : LAUGH_SRC[1]);
     el.loop = true;
     el.preservesPitch = false; el.webkitPreservesPitch = false;
+    el.preload = 'auto';
+    el.addEventListener('error', () => note('audio', el.error && ('code ' + el.error.code)));
   }
   function wake() {
     if (keepAlive) startKeepAlive();
     if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
     // 兜底模式下保持一直在播，只靠静音开关控制，避免之后的 play() 被拦
-    if (el && el.paused) { el.muted = !wasOn; el.play().catch(() => {}); }
+    if (el && el.paused) { el.muted = !wasOn; el.play().catch(e => note('play', e)); }
   }
   // iOS 打开静音拨片时会把 Web Audio 静音；只要页面里有一个 <audio> 在播，iOS 就按媒体播放处理，
   // 所以在点击里循环播一段空白音频（微信内置浏览器不一定支持 navigator.audioSession）
@@ -160,7 +171,7 @@ const sound = (() => {
       try {
         ctx = new AC();
         load();
-      } catch (e) { ctx = null; useElement(); }
+      } catch (e) { note('ctx', e); ctx = null; useElement(); }
     }
     if (ctx) {
       // 老版 iOS 要在点击里真正播一段（哪怕是空白）才算解锁
@@ -204,8 +215,16 @@ const sound = (() => {
     wasOn = on;
   }
   function setEnabled(v) { enabled = v; }
-  function stuck() { return !!ctx && ctx.state !== 'running'; }
-  return { unlock, wake, update, setEnabled, stuck };
+  function stuck() { return el ? el.paused : (!!ctx && ctx.state !== 'running'); }
+  function info() {
+    const parts = [el ? 'mode=audio' : ctx ? 'mode=webaudio' : 'mode=none'];
+    if (ctx) parts.push('ctx=' + ctx.state, 'buffer=' + (buffer ? buffer.duration.toFixed(1) + 's' : 'no'));
+    if (el) parts.push('paused=' + el.paused, 'muted=' + el.muted, 't=' + el.currentTime.toFixed(1), 'ready=' + el.readyState, 'rate=' + el.playbackRate.toFixed(1));
+    parts.push('on=' + wasOn);
+    if (errs.length) parts.push('err=' + errs.join(' | '));
+    return parts.join('  ');
+  }
+  return { unlock, wake, update, setEnabled, stuck, info };
 })();
 
 // 切到后台再回来、来电打断之后，任意一次点击都能把声音叫醒
@@ -302,6 +321,15 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
+
+// 链接后加 ?debug 会在页面底部显示声音状态，排查某个浏览器没声音时截图用
+if (/[?&]debug\b/.test(location.search)) {
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;padding:6px 10px calc(6px + env(safe-area-inset-bottom,0px));' +
+    'font:11px/1.4 ui-monospace,monospace;background:var(--ink);color:var(--bg);opacity:.85;word-break:break-all;z-index:20';
+  document.body.appendChild(box);
+  setInterval(() => { box.textContent = sound.info() + '  ' + navigator.userAgent; }, 500);
+}
 </script>
 </body>
 </html>
